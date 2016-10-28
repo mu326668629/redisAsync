@@ -1,0 +1,7 @@
+BUG:
+   当出现异常，引起重连，好像只能全部重新连接了.
+
+   退出时，删除redisAsyncContext *ac, 如果因为网络问题断开连接，内部会自动清除ac->c, 但是好像没有删ac
+   redisAsyncFree(c); 
+
+   而如果是主动退出，则需要自己删ac->c
