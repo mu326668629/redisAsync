@@ -1,6 +1,5 @@
 BUG:
-   当出现异常，引起重连，好像只能全部重新连接了.
-
+   当出现网络异常，重新构建redisAsyncContext ,加入loop中
    网络断开内部会自动调用__redisAsyncDisconnect释放redisAsyncContext对象.
    如果主动断开连接 不能直接释放对象，需要调用redisAsyncDisconnect
 

@@ -7,26 +7,33 @@
 #include "async.h"
 #include "adapters/ae.h"
 
+int reconnect(const redisAsyncContext *ac, const char *err);
+
 #define LOG(fmt, args...) printf(""fmt"\n", ##args)
 /* Put event loop in the global scope, so it can be explicitly stopped */
 static aeEventLoop *loop;
 
-void reply(redisReply *_r)
+int reply(redisReply *_r)
 {   
     redisReply *r = (redisReply *)_r;
     switch(r->type){
     case REDIS_REPLY_STRING  ://1
-        if(memcmp(r->str, "quit", 4) == 0){
-            aeStop(loop);
-        }
         LOG("[STRING] %s", r->str);
+        if(memcmp(r->str, "quit", 4) == 0){
+            return -1;
+        }
         break;
     case REDIS_REPLY_ARRAY   ://2
         {
             int i;
+            int ret = 0;
             for(i = 0; i < r->elements; ++i){
-                reply(r->element[i]);
+                if(reply(r->element[i]) == -1){
+                    ret = - 1;
+                }
+
             }
+            return ret;
         }
         break;
     case REDIS_REPLY_INTEGER ://3
@@ -45,25 +52,28 @@ void reply(redisReply *_r)
         LOG("[UNKNOW] %d", r->type);
         break;
     }
+    return 0;
 }
 
 
 void getCallback(redisAsyncContext *c, void *r, void *privdata) {
     if (r == NULL) {
         if(c->err){
-            aeStop(loop);
+            reconnect(c, c->errstr);
         }
-        LOG("read IS NULL");
         return;
     }
-    reply(r);
+    if(reply(r) == -1){
+        redisAsyncDisconnect(c);
+        aeStop(loop);
+    }
     /* Disconnect after receiving the reply to GET */
     //redisAsyncDisconnect(c);
 }
 
 void connectCallback(const redisAsyncContext *c, int status) {
     if (status != REDIS_OK) {
-        aeStop(loop);
+        reconnect(c, c->errstr);
         return;
     }
     printf("Connected...\n");
@@ -72,43 +82,46 @@ void connectCallback(const redisAsyncContext *c, int status) {
 void disconnectCallback(const redisAsyncContext *c, int status) {
 
     if (status != REDIS_OK) {
+        LOG("Disconnected fail");
         return;
     }
     printf("Disconnected...\n");
 }
 
 
-void channel()
-{
-    redisAsyncContext *c = redisAsyncConnect("127.0.0.1", 6379);
+int reconnect(const redisAsyncContext *_ac, const char *err)
+{ 
+    redisAsyncContext * ac;
 
-    if (c->err) {
-        /* Let *c leak for now... */
-        printf("Error: %s\n", c->errstr);
-        return ;
+    if(_ac){
+        //aeDeleteFileEvent(loop, _ac->c.fd,  AE_ALL_EVENTS);
+        sleep(1);
     }
-    loop = aeCreateEventLoop(10);
-    redisAeAttach(loop, c);
-    redisAsyncSetConnectCallback(c,connectCallback);
-    redisAsyncSetDisconnectCallback(c,disconnectCallback);
-    redisAsyncCommand(c, getCallback, NULL, "SUBSCRIBE channel");
-
-    loop->stop = 0;
-    while(!loop->stop){
-        aeProcessEvents(loop, AE_ALL_EVENTS);
+    ac = redisAsyncConnect("127.0.0.1", 6379);
+    if(ac->err){
+        LOG("reconnect fail Error:%s", ac->errstr);
+        redisAsyncFree(ac);
+        return -1;
     }
-    aeDeleteEventLoop(loop);
-    redisAsyncFree(c); //FIX ME
+    LOG("RECONNECT... fd=%d,error=%s", ac->c.fd, err?err:"");
+    redisAeAttach(loop, ac);
+    redisAsyncSetConnectCallback(ac,connectCallback);
+    redisAsyncSetDisconnectCallback(ac,disconnectCallback);
+    redisAsyncCommand(ac, getCallback, NULL, "SUBSCRIBE channel");
+    return 0;
 }
 
 int main (int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
 
-    do{
-        channel();
-//        sleep(1);
-    }while(1);
-
+    loop = aeCreateEventLoop(10);
+    reconnect(NULL, NULL);
+    loop->stop = 0;
+    while(!loop->stop){
+        aeProcessEvents(loop, AE_ALL_EVENTS);
+    }
+    aeDeleteEventLoop(loop);
+    LOG("********QUIT*********");
     return 0;
 }
 
